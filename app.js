@@ -1,6 +1,7 @@
 'use strict';
 /* 親戚稱謂小幫手 — 全部在手機瀏覽器本機執行,不上傳任何資料 */
 
+const APP_VERSION = 'v1.1';   // 每次更新請一起調整,首頁底部會顯示
 const SCENES = { newyear: '過年', clan: '宗親會', all: '全部人' };
 const MATCH_THRESHOLD = 0.5;   // 越小越嚴格
 const $ = (id) => document.getElementById(id);
@@ -400,6 +401,7 @@ function bind() {
 (async function init() {
   await DB.open();
   people = await DB.all();
+  $('version').textContent = '版本 ' + APP_VERSION;
   bind(); refreshCounts(); show('home');
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 })();
