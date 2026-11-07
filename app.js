@@ -1,9 +1,14 @@
 'use strict';
 /* 親戚稱謂小幫手 — 全部在手機瀏覽器本機執行,不上傳任何資料 */
 
-const APP_VERSION = 'v1.4';   // 每次更新請一起調整,首頁底部會顯示
+const APP_VERSION = 'v1.5';   // 每次更新請一起調整,首頁底部會顯示
 const SCENES = { newyear: '過年', clan: '宗親會', all: '全部人' };
-const MATCH_THRESHOLD = 0.5;   // 越小越嚴格
+const MATCH_THRESHOLD = 0.55;  // 越小越嚴格
+const MATCH_MARGIN = 0.04;     // 第一名要比「別人」的最佳距離至少近這麼多,否則視為不確定
+const UNKNOWN_SAME = 0.6;      // 兩張臉距離小於此值,視為同一個陌生人
+const Q = { score: 0.6, size: 0.10, yaw: 0.35, sharp: 60 };   // 即時辨識的畫質門檻(臉寬佔畫面比例、正臉程度、清晰度)
+const NEED_HITS = { known: 2, unknown: 3 };                   // 連續看到幾次才列入清單
+const MAX_SAMPLES = 20;        // 每個人最多保留幾張臉部樣本
 const $ = (id) => document.getElementById(id);
 
 /* ---------- IndexedDB ---------- */
@@ -132,24 +137,63 @@ function cropFace(source, box) {
   c.getContext('2d').drawImage(source, x, y, w, h, 0, 0, c.width, c.height);
   return c.toDataURL('image/jpeg', 0.85);
 }
-// 把這次偵測到的臉加進清單(同一個人不會重複);回傳是否有新增
-function rememberFace(source, face, match) {
-  const d = Array.from(face.descriptor);
-  if (match) {
-    if (seen.some((x) => x.kind === 'known' && x.person.id === match.person.id)) return false;
-  } else if (seen.some((x) => x.kind === 'unknown' && faceapi.euclideanDistance(x.descriptor, d) <= MATCH_THRESHOLD)) {
+// 加入清單(同一個人不會重複);回傳是否有新增
+function addSeen(kind, thumb, descriptor, person) {
+  if (kind === 'known') {
+    if (seen.some((x) => x.kind === 'known' && x.person.id === person.id)) return false;
+  } else if (seen.some((x) => x.kind === 'unknown' && faceapi.euclideanDistance(x.descriptor, descriptor) <= UNKNOWN_SAME)) {
     return false;
   }
-  seen.unshift({
-    id: String(Date.now() + Math.random()),
-    kind: match ? 'known' : 'unknown',
-    thumb: cropFace(source, face.detection.box),
-    descriptor: d,
-    person: match ? match.person : null,
-  });
+  seen.unshift({ id: String(Date.now() + Math.random()), kind, thumb, descriptor, person: person || null });
   if (seen.length > 16) seen.pop();
   return true;
 }
+// 用照片辨識:直接加入
+function rememberFace(source, face, match) {
+  return addSeen(match ? 'known' : 'unknown', cropFace(source, face.detection.box), Array.from(face.descriptor), match && match.person);
+}
+
+/* 畫質檢查:模糊、側臉、太小的臉不拿去比對 */
+function sharpness(source, box) {
+  const c = document.createElement('canvas'); c.width = c.height = 64;
+  const ctx = c.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(source, box.x, box.y, box.width, box.height, 0, 0, 64, 64);
+  const d = ctx.getImageData(0, 0, 64, 64).data, g = new Float32Array(64 * 64);
+  for (let i = 0; i < g.length; i++) g[i] = 0.299 * d[i * 4] + 0.587 * d[i * 4 + 1] + 0.114 * d[i * 4 + 2];
+  let sum = 0, sq = 0, n = 0;
+  for (let y = 1; y < 63; y++) for (let x = 1; x < 63; x++) {
+    const i = y * 64 + x, l = 4 * g[i] - g[i - 1] - g[i + 1] - g[i - 64] - g[i + 64];
+    sum += l; sq += l * l; n++;
+  }
+  return sq / n - (sum / n) ** 2;     // 拉普拉斯變異數,越大越清晰
+}
+function faceQuality(face, source) {
+  const W = source.videoWidth || source.width, b = face.detection.box, p = face.landmarks.positions;
+  const nose = p[30].x, l = nose - p[0].x, r = p[16].x - nose;
+  const yaw = Math.min(l, r) / Math.max(l, r, 1e-6);
+  const size = b.width / W, sharp = sharpness(source, b), score = face.detection.score;
+  let why = '';
+  if (score < Q.score || size < Q.size) why = '請靠近一點';
+  else if (yaw < Q.yaw) why = '請看鏡頭';
+  else if (sharp < Q.sharp) why = '請拿穩';
+  return { ok: !why, why, sharp };
+}
+
+/* 連續確認:同一個人要連續認出幾次才列入清單,並挑最清楚的那張當縮圖 */
+let pending = [];
+function observe(source, face, match, q) {
+  const now = Date.now(), d = Array.from(face.descriptor);
+  pending = pending.filter((x) => now - x.last < 4000);
+  const kind = match ? 'known' : 'unknown';
+  let it = match
+    ? pending.find((x) => x.kind === 'known' && x.person.id === match.person.id)
+    : pending.find((x) => x.kind === 'unknown' && faceapi.euclideanDistance(x.descriptor, d) <= UNKNOWN_SAME);
+  if (!it) { it = { kind, person: match ? match.person : null, descriptor: d, hits: 0, sharp: -1, thumb: null }; pending.push(it); }
+  it.hits++; it.last = now;
+  if (q.sharp > it.sharp) { it.sharp = q.sharp; it.thumb = cropFace(source, face.detection.box); it.descriptor = d; }
+  return it.hits >= NEED_HITS[kind] ? addSeen(kind, it.thumb, it.descriptor, it.person) : false;
+}
+
 function renderSeen() {
   const box = $('seenBox');
   if (!seen.length) { box.hidden = true; box.innerHTML = ''; return; }
@@ -163,7 +207,25 @@ function renderSeen() {
         <button type="button" data-u="del">移除</button></div>` : `
       <div class="u-item" data-id="${u.id}"><img src="${u.thumb}" alt="">
         <div class="u-t u-unk">認不出來</div>
-        <button type="button" data-u="add">建檔</button><button type="button" data-u="del">移除</button></div>`).join('')}</div>`;
+        <button type="button" data-u="who">是已建檔的人</button>
+        <button type="button" data-u="add">新建檔</button><button type="button" data-u="del">移除</button></div>`).join('')}</div>`;
+}
+function openPicker(id) {
+  const list = people.filter(inScene).sort((a, b) => a.title.localeCompare(b.title, 'zh-Hant'));
+  if (!list.length) { alert('這個場合還沒有建檔的人。'); return; }
+  $('pickList').innerHTML = list.map((p) => `<button type="button" class="pick" data-pid="${p.id}" data-sid="${id}"><img src="${p.photo}" alt=""><span><b>${esc(p.title)}</b> ${esc(p.name)}</span></button>`).join('');
+  $('pickSheet').hidden = false;
+}
+async function addSample(pid, sid) {
+  const p = people.find((x) => x.id === pid), u = seen.find((x) => x.id === sid);
+  $('pickSheet').hidden = true;
+  if (!p || !u) return;
+  p.thumbs = p.thumbs || p.descriptors.map(() => p.photo);
+  p.descriptors.push(u.descriptor); p.thumbs.push(u.thumb);
+  while (p.descriptors.length > MAX_SAMPLES) { p.descriptors.splice(3, 1); p.thumbs.splice(3, 1); }   // 保留最初幾張,汰換較舊的新增樣本
+  await DB.put(p);
+  seen = seen.filter((x) => x.id !== sid);
+  renderSeen();
 }
 function enrollSeen(id) {
   const u = seen.find((x) => x.id === id && x.kind === 'unknown'); if (!u) return;
@@ -177,14 +239,17 @@ function enrollSeen(id) {
 
 /* ---------- 比對 ---------- */
 function bestMatch(descriptor, pool) {
-  let best = null;
+  let best = null, second = Infinity;
   for (const p of pool) {
-    for (const d of p.descriptors) {
-      const dist = faceapi.euclideanDistance(descriptor, d);
-      if (!best || dist < best.dist) best = { person: p, dist };
-    }
+    let dist = Infinity;
+    for (const d of p.descriptors) dist = Math.min(dist, faceapi.euclideanDistance(descriptor, d));
+    if (!best || dist < best.dist) { if (best) second = Math.min(second, best.dist); best = { person: p, dist }; }
+    else second = Math.min(second, dist);
   }
-  return best && best.dist <= MATCH_THRESHOLD ? best : null;
+  if (!best || best.dist > MATCH_THRESHOLD) return null;
+  // 很像兩個人時(第一、第二名太接近)寧可不認,避免認錯
+  if (best.dist >= 0.4 && second - best.dist < MATCH_MARGIN) return null;
+  return best;
 }
 function personLabel(p) { return p.name ? `${p.title}(${p.name})` : p.title; }
 
@@ -208,7 +273,7 @@ async function startCamera() {
   scanLoop(pool);
 }
 function stopCamera() {
-  clearTimeout(scanTimer); scanTimer = null;
+  clearTimeout(scanTimer); scanTimer = null; pending = [];
   if (stream) { stream.getTracks().forEach((t) => t.stop()); stream = null; }
   $('video').srcObject = null;
   const o = $('overlay'); o.getContext('2d').clearRect(0, 0, o.width, o.height);
@@ -222,22 +287,24 @@ async function scanLoop(pool) {
     o.width = v.videoWidth; o.height = v.videoHeight;
     const ctx = o.getContext('2d');
     ctx.clearRect(0, 0, o.width, o.height);
-    const found = await faceapi.detectAllFaces(v, new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.5 }))
+    const found = await faceapi.detectAllFaces(v, new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.5 }))
       .withFaceLandmarks().withFaceDescriptors();
     if (!stream) return;
     let added = false;
     for (const f of found) {
-      const m = bestMatch(f.descriptor, pool);
-      if (rememberFace(v, f, m)) added = true;
+      const q = faceQuality(f, v);
+      const m = q.ok ? bestMatch(f.descriptor, pool) : null;
+      if (q.ok && observe(v, f, m, q)) added = true;
       const b = f.detection.box;
-      const text = m ? personLabel(m.person) : '認不出來';
+      const text = !q.ok ? q.why : m ? personLabel(m.person) : '認不出來';
+      const color = !q.ok ? '#757575' : m ? '#2e7d32' : '#e0a000';
       ctx.lineWidth = Math.max(3, o.width / 200);
-      ctx.strokeStyle = m ? '#2e7d32' : '#e0a000';
+      ctx.strokeStyle = color;
       ctx.strokeRect(b.x, b.y, b.width, b.height);
       const fs = Math.max(20, o.width / 20);
       ctx.font = `bold ${fs}px sans-serif`;
       const tw = ctx.measureText(text).width + 14;
-      ctx.fillStyle = m ? '#2e7d32' : '#e0a000';
+      ctx.fillStyle = color;
       ctx.fillRect(b.x, Math.max(0, b.y - fs - 10), tw, fs + 10);
       ctx.fillStyle = '#fff';
       ctx.fillText(text, b.x + 7, Math.max(fs, b.y - 8));
@@ -381,10 +448,13 @@ function bind() {
     else {
       const id = b.closest('.u-item').dataset.id;
       if (b.dataset.u === 'add') return enrollSeen(id);
+      if (b.dataset.u === 'who') return openPicker(id);
       seen = seen.filter((x) => x.id !== id);
     }
     renderSeen();
   });
+  $('pickList').addEventListener('click', (e) => { const b = e.target.closest('.pick'); if (b) addSample(b.dataset.pid, b.dataset.sid); });
+  $('pickCancel').addEventListener('click', () => { $('pickSheet').hidden = true; });
   $('search').addEventListener('input', renderGrid);
   $('grid').addEventListener('click', async (e) => {
     const btn = e.target.closest('button[data-act]'); if (!btn) return;
