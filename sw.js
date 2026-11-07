@@ -1,4 +1,4 @@
-const CACHE = 'relative-call-v1';
+const CACHE = 'relative-call-v2';
 const FILES = [
   './', 'index.html', 'style.css', 'app.js', 'manifest.json', 'icon.svg', 'lib/face-api.js',
   'models/tiny_face_detector_model-weights_manifest.json', 'models/tiny_face_detector_model.bin',
@@ -11,5 +11,10 @@ self.addEventListener('activate', (e) => e.waitUntil(
   caches.keys().then((ks) => Promise.all(ks.filter((k) => k !== CACHE).map((k) => caches.delete(k)))).then(() => self.clients.claim())));
 self.addEventListener('fetch', (e) => {
   if (e.request.method !== 'GET') return;
-  e.respondWith(caches.match(e.request).then((hit) => hit || fetch(e.request)));
+  const heavy = /\/(models|lib)\//.test(e.request.url);
+  if (heavy) { e.respondWith(caches.match(e.request).then((hit) => hit || fetch(e.request))); return; }
+  // 程式檔:優先抓最新版,沒網路才用快取
+  e.respondWith(fetch(e.request).then((r) => {
+    const copy = r.clone(); caches.open(CACHE).then((c) => c.put(e.request, copy)); return r;
+  }).catch(() => caches.match(e.request)));
 });
