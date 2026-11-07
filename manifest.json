@@ -1,0 +1,11 @@
+{
+  "name": "親戚稱謂小幫手",
+  "short_name": "稱謂小幫手",
+  "description": "忘記親戚怎麼稱呼時,拍一下就知道要叫什麼",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#fff8f1",
+  "theme_color": "#b3261e",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}

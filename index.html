@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#b3261e">
+<title>親戚稱謂小幫手</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg">
+<link rel="apple-touch-icon" href="icon.svg">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header id="topbar">
+  <button id="backBtn" hidden aria-label="返回">‹</button>
+  <h1 id="title">親戚稱謂小幫手</h1>
+</header>
+
+<main>
+  <!-- 首頁 -->
+  <section id="view-home">
+    <p class="hint">選擇現在的場合,辨識時只會比對該場合的人,更準也更快。</p>
+    <button class="scene-btn" data-scene="newyear"><span class="emoji">🧧</span><span>過年</span><small id="count-newyear"></small></button>
+    <button class="scene-btn" data-scene="clan"><span class="emoji">🏮</span><span>宗親會</span><small id="count-clan"></small></button>
+    <button class="link-btn" data-scene="all">查看全部人</button>
+    <div class="row">
+      <button class="ghost" id="exportBtn">備份匯出</button>
+      <label class="ghost btn">匯入備份<input type="file" id="importFile" accept="application/json" hidden></label>
+    </div>
+    <p class="hint small">所有照片與人臉資料只存在這支手機的瀏覽器裡,不會上傳。</p>
+  </section>
+
+  <!-- 場合頁面 -->
+  <section id="view-scene" hidden>
+    <nav class="tabs">
+      <button data-tab="scan" class="active">📷 辨識</button>
+      <button data-tab="wall">🖼 照片牆</button>
+      <button data-tab="add">＋ 新增</button>
+    </nav>
+
+    <div id="tab-scan">
+      <div id="camBox">
+        <video id="video" playsinline muted></video>
+        <canvas id="overlay"></canvas>
+        <div id="camMsg">按下「開啟相機」開始</div>
+      </div>
+      <div class="row">
+        <button id="camToggle" class="primary">開啟相機</button>
+        <button id="camFlip" class="ghost">切換鏡頭</button>
+        <label class="ghost btn">用照片辨識<input type="file" id="scanPhoto" accept="image/*" hidden></label>
+      </div>
+      <div id="result"></div>
+    </div>
+
+    <div id="tab-wall" hidden>
+      <input type="search" id="search" placeholder="搜尋名字、稱謂、備註…">
+      <div id="grid"></div>
+    </div>
+
+    <div id="tab-add" hidden>
+      <form id="form">
+        <input type="hidden" id="f-id">
+        <label>稱謂(你要叫他什麼)<input id="f-title" required placeholder="例如:二舅、表姐、叔公"></label>
+        <label>名字<input id="f-name" placeholder="例如:王大明"></label>
+        <label>備註 / 輩分<input id="f-note" placeholder="例如:字輩「德」、住台中、孩子叫小安"></label>
+        <fieldset>
+          <legend>出現的場合(可複選)</legend>
+          <label class="chk"><input type="checkbox" id="g-newyear"> 🧧 過年</label>
+          <label class="chk"><input type="checkbox" id="g-clan"> 🏮 宗親會</label>
+        </fieldset>
+        <div>
+          <div class="photo-head">照片(建議 3~5 張,不同角度)</div>
+          <div class="row">
+            <label class="ghost btn">拍照<input type="file" id="f-cam" accept="image/*" capture="environment" hidden></label>
+            <label class="ghost btn">從相簿選<input type="file" id="f-photos" accept="image/*" multiple hidden></label>
+          </div>
+          <div id="thumbs"></div>
+          <div id="photoStatus" class="hint small"></div>
+        </div>
+        <div class="row">
+          <button type="submit" class="primary" id="saveBtn">儲存</button>
+          <button type="button" class="ghost" id="cancelEdit" hidden>取消編輯</button>
+        </div>
+      </form>
+    </div>
+  </section>
+</main>
+
+<div id="loading" hidden>載入中…</div>
+<script src="lib/face-api.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
