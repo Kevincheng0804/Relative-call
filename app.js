@@ -1,7 +1,7 @@
 'use strict';
 /* 親戚稱謂小幫手 — 全部在手機瀏覽器本機執行,不上傳任何資料 */
 
-const APP_VERSION = 'v1.3';   // 每次更新請一起調整,首頁底部會顯示
+const APP_VERSION = 'v1.4';   // 每次更新請一起調整,首頁底部會顯示
 const SCENES = { newyear: '過年', clan: '宗親會', all: '全部人' };
 const MATCH_THRESHOLD = 0.5;   // 越小越嚴格
 const $ = (id) => document.getElementById(id);
@@ -46,7 +46,7 @@ let modelsReady = null;
 let stream = null, scanTimer = null, facing = 'environment';
 let draftPhotos = [];       // {thumb, descriptor|null}
 let editing = null;         // 正在編輯的 person
-let unknownFaces = [];      // 沒辨識到的臉 {id, thumb, descriptor}(只存在記憶體,重新整理就清空)
+let seen = [];              // 這次遇到的人 {id, kind:'known'|'unknown', thumb, descriptor, person}(只存在記憶體,重新整理就清空)
 
 const inScene = (p) => scene === 'all' || p.groups.includes(scene);
 
@@ -120,7 +120,7 @@ async function describeBiggest(canvas) {
   return { descriptor: Array.from(all[0].descriptor), count: all.length };
 }
 
-/* ---------- 沒辨識到的臉 ---------- */
+/* ---------- 這次遇到的人(辨識到與沒辨識到的都列出來) ---------- */
 function cropFace(source, box) {
   const sw = source.videoWidth || source.width, sh = source.videoHeight || source.height;
   const m = 0.3;
@@ -132,31 +132,47 @@ function cropFace(source, box) {
   c.getContext('2d').drawImage(source, x, y, w, h, 0, 0, c.width, c.height);
   return c.toDataURL('image/jpeg', 0.85);
 }
-// 回傳是否有新增(同一個人不會重複加入)
-function rememberUnknown(source, face) {
+// 把這次偵測到的臉加進清單(同一個人不會重複);回傳是否有新增
+function rememberFace(source, face, match) {
   const d = Array.from(face.descriptor);
-  if (unknownFaces.some((u) => faceapi.euclideanDistance(u.descriptor, d) <= MATCH_THRESHOLD)) return false;
-  unknownFaces.unshift({ id: String(Date.now() + Math.random()), thumb: cropFace(source, face.detection.box), descriptor: d });
-  if (unknownFaces.length > 12) unknownFaces.pop();
+  if (match) {
+    if (seen.some((x) => x.kind === 'known' && x.person.id === match.person.id)) return false;
+  } else if (seen.some((x) => x.kind === 'unknown' && faceapi.euclideanDistance(x.descriptor, d) <= MATCH_THRESHOLD)) {
+    return false;
+  }
+  seen.unshift({
+    id: String(Date.now() + Math.random()),
+    kind: match ? 'known' : 'unknown',
+    thumb: cropFace(source, face.detection.box),
+    descriptor: d,
+    person: match ? match.person : null,
+  });
+  if (seen.length > 16) seen.pop();
   return true;
 }
-function renderUnknown() {
-  const box = $('unknownBox');
-  if (!unknownFaces.length) { box.hidden = true; box.innerHTML = ''; return; }
+function renderSeen() {
+  const box = $('seenBox');
+  if (!seen.length) { box.hidden = true; box.innerHTML = ''; return; }
   box.hidden = false;
-  box.innerHTML = `<div class="u-head"><b>沒辨識到的人</b><button type="button" data-u="clear">全部清除</button></div>
-    <div class="u-list">${unknownFaces.map((u) => `
+  box.innerHTML = `<div class="u-head"><b>這次遇到的人</b><button type="button" data-u="clear">全部清除</button></div>
+    <div class="u-list">${[...seen].sort((a, b) => (a.kind === 'known' ? 0 : 1) - (b.kind === 'known' ? 0 : 1)).map((u) => u.kind === 'known' ? `
+      <div class="u-item known" data-id="${u.id}"><img src="${u.thumb}" alt="">
+        <div class="u-t">${esc(u.person.title)}</div>
+        <div class="u-n">${esc(u.person.name || '')}</div>
+        <div class="u-n">${esc(u.person.note || '')}</div>
+        <button type="button" data-u="del">移除</button></div>` : `
       <div class="u-item" data-id="${u.id}"><img src="${u.thumb}" alt="">
+        <div class="u-t u-unk">認不出來</div>
         <button type="button" data-u="add">建檔</button><button type="button" data-u="del">移除</button></div>`).join('')}</div>`;
 }
-function enrollUnknown(id) {
-  const u = unknownFaces.find((x) => x.id === id); if (!u) return;
+function enrollSeen(id) {
+  const u = seen.find((x) => x.id === id && x.kind === 'unknown'); if (!u) return;
   setTab('add'); resetForm();
   draftPhotos = [{ thumb: u.thumb, descriptor: u.descriptor }];
   renderThumbs();
   $('photoStatus').textContent = '已帶入這張臉,請填寫稱謂,再補幾張不同角度的照片會更準。';
-  unknownFaces = unknownFaces.filter((x) => x.id !== id);
-  renderUnknown();
+  seen = seen.filter((x) => x.id !== id);
+  renderSeen();
 }
 
 /* ---------- 比對 ---------- */
@@ -198,7 +214,6 @@ function stopCamera() {
   const o = $('overlay'); o.getContext('2d').clearRect(0, 0, o.width, o.height);
   $('camToggle').textContent = '開啟相機';
   $('camMsg').hidden = false; $('camMsg').textContent = '按下「開啟相機」開始';
-  $('result').innerHTML = '';
 }
 async function scanLoop(pool) {
   if (!stream) return;
@@ -210,11 +225,10 @@ async function scanLoop(pool) {
     const found = await faceapi.detectAllFaces(v, new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.5 }))
       .withFaceLandmarks().withFaceDescriptors();
     if (!stream) return;
-    const rows = [];
     let added = false;
     for (const f of found) {
       const m = bestMatch(f.descriptor, pool);
-      if (!m && rememberUnknown(v, f)) added = true;
+      if (rememberFace(v, f, m)) added = true;
       const b = f.detection.box;
       const text = m ? personLabel(m.person) : '認不出來';
       ctx.lineWidth = Math.max(3, o.width / 200);
@@ -227,21 +241,11 @@ async function scanLoop(pool) {
       ctx.fillRect(b.x, Math.max(0, b.y - fs - 10), tw, fs + 10);
       ctx.fillStyle = '#fff';
       ctx.fillText(text, b.x + 7, Math.max(fs, b.y - 8));
-      rows.push({ m, area: b.width * b.height });
     }
-    rows.sort((a, b) => b.area - a.area);
-    renderResults(rows.map((r) => r.m));
-    if (added) renderUnknown();
+    if (added) renderSeen();
   }
   scanTimer = setTimeout(() => scanLoop(pool), 350);
 }
-function renderResults(matches) {
-  if (!matches.length) { $('result').innerHTML = '<div class="res unknown">畫面中沒有偵測到人臉</div>'; return; }
-  $('result').innerHTML = matches.map((m) => m
-    ? `<div class="res"><img src="${m.person.photo}" alt=""><div><div class="t">叫他:${esc(m.person.title)}</div><div class="n">${esc(m.person.name || '')} ${esc(m.person.note || '')}</div></div></div>`
-    : '<div class="res unknown">認不出來 — 可以到「照片牆」手動找</div>').join('');
-}
-
 async function scanFromPhoto(file) {
   const pool = people.filter((p) => inScene(p) && p.descriptors.length);
   if (!pool.length) { alert('這個場合還沒有建檔的人。'); return; }
@@ -252,14 +256,10 @@ async function scanFromPhoto(file) {
     const found = await faceapi.detectAllFaces(canvas, new faceapi.SsdMobilenetv1Options({ minConfidence: 0.5 }))
       .withFaceLandmarks().withFaceDescriptors();
     found.sort((a, b) => b.detection.box.area - a.detection.box.area);
+    if (!found.length) { alert('照片裡沒有偵測到人臉。'); return; }
     let added = false;
-    const matches = found.map((f) => {
-      const m = bestMatch(f.descriptor, pool);
-      if (!m && rememberUnknown(canvas, f)) added = true;
-      return m;
-    });
-    renderResults(matches);
-    if (added) renderUnknown();
+    for (const f of found) if (rememberFace(canvas, f, bestMatch(f.descriptor, pool))) added = true;
+    if (added) renderSeen();
   } finally { $('loading').hidden = true; }
 }
 
@@ -375,15 +375,15 @@ function bind() {
     if (stream) { stopCamera(); await startCamera(); }
   });
   $('scanPhoto').addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) scanFromPhoto(f); });
-  $('unknownBox').addEventListener('click', (e) => {
+  $('seenBox').addEventListener('click', (e) => {
     const b = e.target.closest('button[data-u]'); if (!b) return;
-    if (b.dataset.u === 'clear') unknownFaces = [];
+    if (b.dataset.u === 'clear') seen = [];
     else {
       const id = b.closest('.u-item').dataset.id;
-      if (b.dataset.u === 'add') return enrollUnknown(id);
-      unknownFaces = unknownFaces.filter((x) => x.id !== id);
+      if (b.dataset.u === 'add') return enrollSeen(id);
+      seen = seen.filter((x) => x.id !== id);
     }
-    renderUnknown();
+    renderSeen();
   });
   $('search').addEventListener('input', renderGrid);
   $('grid').addEventListener('click', async (e) => {
