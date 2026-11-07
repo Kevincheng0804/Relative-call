@@ -59,3 +59,4 @@ fieldset{border:1.5px solid var(--line);border-radius:12px;padding:8px 12px}
 .u-item img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:10px}
 .u-item button{padding:6px;border-radius:8px;border:1px solid var(--line);background:#fafafa}
 .u-item button[data-u=add]{background:var(--red);color:#fff;border-color:var(--red)}
+#storageWarn{background:#fff3cd;border:1.5px solid #e0a000;color:#5c4400;border-radius:12px;padding:12px;margin-bottom:14px;font-size:.95rem;line-height:1.5}
