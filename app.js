@@ -1,7 +1,7 @@
 'use strict';
 /* 親戚稱謂小幫手 — 全部在手機瀏覽器本機執行,不上傳任何資料 */
 
-const APP_VERSION = 'v1.1';   // 每次更新請一起調整,首頁底部會顯示
+const APP_VERSION = 'v1.2';   // 每次更新請一起調整,首頁底部會顯示
 const SCENES = { newyear: '過年', clan: '宗親會', all: '全部人' };
 const MATCH_THRESHOLD = 0.5;   // 越小越嚴格
 const $ = (id) => document.getElementById(id);
@@ -9,12 +9,17 @@ const $ = (id) => document.getElementById(id);
 /* ---------- IndexedDB ---------- */
 const DB = {
   db: null,
+  mem: null,                 // IndexedDB 不能用時改存記憶體(關掉頁面就消失)
   open() {
-    return new Promise((res, rej) => {
-      const r = indexedDB.open('relative-call', 1);
-      r.onupgradeneeded = () => r.result.createObjectStore('people', { keyPath: 'id' });
-      r.onsuccess = () => { this.db = r.result; res(); };
-      r.onerror = () => rej(r.error);
+    return new Promise((res) => {
+      const fail = (e) => { this.mem = new Map(); res(e); };
+      try {
+        const r = indexedDB.open('relative-call', 1);
+        r.onupgradeneeded = () => r.result.createObjectStore('people', { keyPath: 'id' });
+        r.onsuccess = () => { this.db = r.result; res(null); };
+        r.onerror = () => fail(r.error || new Error('IndexedDB 開啟失敗'));
+        r.onblocked = () => fail(new Error('IndexedDB 被封鎖'));
+      } catch (e) { fail(e); }
     });
   },
   tx(mode, fn) {
@@ -25,10 +30,11 @@ const DB = {
       t.onerror = () => rej(t.error);
     });
   },
-  all() { return this.tx('readonly', (s) => s.getAll()); },
-  put(p) { return this.tx('readwrite', (s) => s.put(p)); },
-  del(id) { return this.tx('readwrite', (s) => s.delete(id)); },
-  clearAndPutAll(list) {
+  async all() { return this.mem ? [...this.mem.values()] : this.tx('readonly', (s) => s.getAll()); },
+  async put(p) { return this.mem ? void this.mem.set(p.id, p) : this.tx('readwrite', (s) => s.put(p)); },
+  async del(id) { return this.mem ? void this.mem.delete(id) : this.tx('readwrite', (s) => s.delete(id)); },
+  async clearAndPutAll(list) {
+    if (this.mem) { this.mem.clear(); list.forEach((p) => this.mem.set(p.id, p)); return; }
     return this.tx('readwrite', (s) => { s.clear(); list.forEach((p) => s.put(p)); });
   },
 };
@@ -399,9 +405,16 @@ function bind() {
 }
 
 (async function init() {
-  await DB.open();
-  people = await DB.all();
-  $('version').textContent = '版本 ' + APP_VERSION;
-  bind(); refreshCounts(); show('home');
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+  $('version').textContent = '版本 ' + APP_VERSION;   // 先顯示版本,方便確認是不是新版
+  bind();
+  const err = await DB.open();
+  if (err) {
+    const w = $('storageWarn');
+    w.hidden = false;
+    w.textContent = '⚠️ 這個瀏覽器不允許儲存資料,現在輸入的資料關掉頁面就會消失。' +
+      '請改用 Safari(或 Chrome)直接開啟網址,不要用 App 內建瀏覽器,也不要用無痕模式。(原因:' + (err.message || err.name || err) + ')';
+  }
+  try { people = await DB.all(); } catch (e) { people = []; }
+  refreshCounts(); show('home');
+  if (!err && 'serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 })();
