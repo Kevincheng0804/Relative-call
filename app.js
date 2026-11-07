@@ -1,7 +1,7 @@
 'use strict';
 /* 親戚稱謂小幫手 — 全部在手機瀏覽器本機執行,不上傳任何資料 */
 
-const APP_VERSION = 'v1.2';   // 每次更新請一起調整,首頁底部會顯示
+const APP_VERSION = 'v1.3';   // 每次更新請一起調整,首頁底部會顯示
 const SCENES = { newyear: '過年', clan: '宗親會', all: '全部人' };
 const MATCH_THRESHOLD = 0.5;   // 越小越嚴格
 const $ = (id) => document.getElementById(id);
@@ -404,6 +404,21 @@ function bind() {
   document.addEventListener('visibilitychange', () => { if (document.hidden) stopCamera(); });
 }
 
+/* ---------- 更新:發現新版就提示,點一下立刻換上 ---------- */
+function setupUpdates() {
+  const hadController = !!navigator.serviceWorker.controller;
+  let reloading = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController || reloading) return;      // 第一次安裝不用提示
+    $('updateBar').hidden = false;
+  });
+  $('updateBtn').addEventListener('click', () => { reloading = true; location.reload(); });
+  navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then((reg) => {
+    reg.update().catch(() => {});
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) reg.update().catch(() => {}); });
+  }).catch(() => {});
+}
+
 (async function init() {
   $('version').textContent = '版本 ' + APP_VERSION;   // 先顯示版本,方便確認是不是新版
   bind();
@@ -416,5 +431,5 @@ function bind() {
   }
   try { people = await DB.all(); } catch (e) { people = []; }
   refreshCounts(); show('home');
-  if (!err && 'serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+  if (!err && 'serviceWorker' in navigator) setupUpdates();
 })();
